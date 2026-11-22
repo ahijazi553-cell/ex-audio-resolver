@@ -1,87 +1,101 @@
 const express = require('express');
 const yts = require('yt-search');
-const { execFile } = require('child_process');
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
-const TMP_DIR = '/tmp/ex-audio';
-
-if (!fs.existsSync(TMP_DIR)) {
-  fs.mkdirSync(TMP_DIR, { recursive: true });
-}
-
-setInterval(() => {
-  const now = Date.now();
-  for (const file of fs.readdirSync(TMP_DIR)) {
-    const full = path.join(TMP_DIR, file);
-    try {
-      const stat = fs.statSync(full);
-      if (now - stat.mtimeMs > 15 * 60 * 1000) fs.unlinkSync(full);
-    } catch {}
-  }
-}, 5 * 60 * 1000);
 
 app.get('/', (_req, res) => {
   res.json({ ok: true, service: 'ex-audio-resolver' });
 });
 
-app.get('/audio/:file', (req, res) => {
-  const safeName = path.basename(req.params.file);
-  const filePath = path.join(TMP_DIR, safeName);
-  if (!fs.existsSync(filePath)) return res.status(404).end();
-  res.setHeader('Content-Type', 'audio/mpeg');
-  fs.createReadStream(filePath).pipe(res);
-});
-
-async function resolveViaPublicApis(videoUrl, videoId) {
-  const cobaltInstances = [
-    'https://cobalt.tools',
-    'https://kwiatekmiki.com',
-    'https://timelessnesses.me',
+async function searchAudius(query) {
+  const hosts = [
+    'https://audius.co',
+    'https://audius.co',
+    'https://audius.co',
   ];
-  for (const endpoint of cobaltInstances) {
+  for (const host of hosts) {
     try {
-      const resp = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          url: videoUrl,
-          downloadMode: 'audio',
-          audioFormat: 'mp3',
-          audioBitrate: '128',
-        }),
-        signal: AbortSignal.timeout(12000),
+      const r = await fetch(`${host}/v1/tracks/search?query=${encodeURIComponent(query)}&app_name=EX_PLAYROOM`, {
+        signal: AbortSignal.timeout(8000),
       });
-      if (resp.ok) {
-        const data = await resp.json();
-        if (data && data.url) return data.url;
+      if (!r.ok) continue;
+      const json = await r.json();
+      const track = json && json.data && json.data;
+      if (track && track.id) {
+        const mins = Math.floor((track.duration || 0) / 60);
+        const secs = String((track.duration || 0) % 60).padStart(2, '0');
+        return {
+          title: track.title,
+          duration: `${mins}:${secs}`,
+          views: (track.play_count || 0).toLocaleString(),
+          author: (track.user && track.user.name) || 'Artist',
+          thumbnailUrl: (track.artwork && (track.artwork['480x480'] || track.artwork['150x150'])) || '',
+          audioUrl: `${host}/v1/tracks/${track.id}/stream?app_name=EX_PLAYROOM`,
+        };
       }
     } catch {}
   }
+  return null;
+}
 
-  const pipedInstances = [
-    'https://kavin.rocks',
-    'https://adminforge.de',
-    'https://private.coffee',
+async function searchSaavn(query) {
+  const apis = [
+    `https://saavn.dev{encodeURIComponent(query)}`,
+    `https://vercel.app{encodeURIComponent(query)}`,
   ];
-  for (const base of pipedInstances) {
+  for (const url of apis) {
     try {
-      const resp = await fetch(`${base}/streams/${videoId}`, {
-        signal: AbortSignal.timeout(10000),
-      });
-      if (resp.ok) {
-        const data = await resp.json();
-        const streams = (data.audioStreams || []).sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
-        if (streams && streams.url) return streams.url;
+      const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      if (!r.ok) continue;
+      const json = await r.json();
+      const results = (json && json.data && json.data.results) || (json && json.results) || [];
+      const song = results;
+      if (song) {
+        const dl = song.downloadUrl || [];
+        const best = dl[dl.length - 1] || dl;
+        const audioUrl = (best && (best.url || best.link)) || '';
+        const imgs = song.image || [];
+        const bestImg = imgs[imgs.length - 1] || imgs;
+        const thumb = (bestImg && (bestImg.url || bestImg.link)) || '';
+        const dur = Number(song.duration || 0);
+        const mins = Math.floor(dur / 60);
+        const secs = String(dur % 60).padStart(2, '0');
+        if (audioUrl) {
+          return {
+            title: song.name || song.title || query,
+            duration: `${mins}:${secs}`,
+            views: (song.playCount || 'N/A').toString(),
+            author: (song.primaryArtists || (song.artists && song.artists.primary && song.artists.primary.map(a => a.name).join(', '))) || 'Artist',
+            thumbnailUrl: thumb,
+            audioUrl,
+          };
+        }
       }
     } catch {}
   }
+  return null;
+}
+
+async function searchDeezerPreview(query) {
+  try {
+    const r = await fetch(`https://deezer.com{encodeURIComponent(query)}`, {
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) return null;
+    const json = await r.json();
+    const track = json && json.data && json.data;
+    if (track && track.preview) {
+      return {
+        title: track.title,
+        duration: '0:30 (Preview)',
+        views: (track.rank || 0).toLocaleString(),
+        author: (track.artist && track.artist.name) || 'Artist',
+        thumbnailUrl: (track.album && (track.album.cover_big || track.album.cover_medium)) || '',
+        audioUrl: track.preview,
+      };
+    }
+  } catch {}
   return null;
 }
 
@@ -90,54 +104,26 @@ app.get('/resolve', async (req, res) => {
     const query = String(req.query.q || req.query.query || '').trim();
     if (!query) return res.status(400).json({ error: 'Missing query' });
 
-    const search = await yts(query);
-    const video = search.videos && search.videos;
-    if (!video) return res.status(404).json({ error: 'No track found' });
-    if (video.seconds > 3600) {
-      return res.status(400).json({ error: 'Track exceeds 60 minutes limit' });
+    let result = await searchAudius(query);
+    if (!result) result = await searchSaavn(query);
+    if (!result) result = await searchDeezerPreview(query);
+
+    if (!result) {
+      return res.status(404).json({ error: 'No playable audio found' });
     }
 
-    const proto = req.headers['x-forwarded-proto'] || req.protocol || 'https';
-    const host = req.get('host');
-    let audioUrl = await resolveViaPublicApis(video.url, video.videoId);
-
-    if (!audioUrl) {
-      const id = crypto.randomBytes(8).toString('hex');
-      const outFile = path.join(TMP_DIR, `${id}.mp3`);
-      const args = [
-        '-x',
-        '--audio-format', 'mp3',
-        '--audio-quality', '128K',
-        '--no-playlist',
-        '-o', outFile,
-        video.url,
-      ];
-      if (process.env.YT_COOKIES) {
-        const cookiePath = '/tmp/yt-cookies.txt';
-        fs.writeFileSync(cookiePath, process.env.YT_COOKIES);
-        args.unshift('--cookies', cookiePath);
-      }
-      await new Promise((resolve, reject) => {
-        execFile('yt-dlp', args, { timeout: 120000 }, (err, _o, stderr) => {
-          if (err) {
-            console.error('yt-dlp stderr:', stderr);
-            reject(err);
-          } else {
-            resolve();
-          }
-        });
-      });
-      audioUrl = `${proto}://${host}/audio/${id}.mp3`;
+    if (!result.thumbnailUrl) {
+      try {
+        const yt = await yts(query);
+        if (yt && yt.videos && yt.videos) {
+          result.thumbnailUrl = yt.videos.thumbnail || yt.videos.image || '';
+        }
+      } catch {}
     }
 
     res.json({
-      title: video.title,
-      duration: video.timestamp || '0:00',
-      views: video.views ? video.views.toLocaleString() : 'N/A',
-      author: (video.author && video.author.name) || 'YouTube',
-      thumbnailUrl: video.thumbnail || video.image,
-      audioUrl,
-      url: audioUrl,
+      ...result,
+      url: result.audioUrl,
     });
   } catch (err) {
     console.error('Resolve error:', err);
