@@ -21,7 +21,8 @@ async function searchAudius(query) {
       });
       if (!r.ok) continue;
       const json = await r.json();
-      const track = json && json.data && json.data;
+      const list = Array.isArray(json && json.data) ? json.data : [];
+      const track = list.at(0);
       if (track && track.id) {
         const mins = Math.floor((track.duration || 0) / 60);
         const secs = String((track.duration || 0) % 60).padStart(2, '0');
@@ -49,14 +50,14 @@ async function searchSaavn(query) {
       const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
       if (!r.ok) continue;
       const json = await r.json();
-      const results = (json && json.data && json.data.results) || (json && json.results) || [];
-      const song = results;
+      const raw = (json && json.data && json.data.results) || (json && json.results) || [];
+      const song = Array.isArray(raw) ? raw.at(0) : null;
       if (song) {
-        const dl = song.downloadUrl || [];
-        const best = dl[dl.length - 1] || dl;
+        const dl = Array.isArray(song.downloadUrl) ? song.downloadUrl : [];
+        const best = dl.at(-1) || dl.at(0);
         const audioUrl = (best && (best.url || best.link)) || '';
-        const imgs = song.image || [];
-        const bestImg = imgs[imgs.length - 1] || imgs;
+        const imgs = Array.isArray(song.image) ? song.image : [];
+        const bestImg = imgs.at(-1) || imgs.at(0);
         const thumb = (bestImg && (bestImg.url || bestImg.link)) || '';
         const dur = Number(song.duration || 0);
         const mins = Math.floor(dur / 60);
@@ -66,7 +67,7 @@ async function searchSaavn(query) {
             title: song.name || song.title || query,
             duration: `${mins}:${secs}`,
             views: (song.playCount || 'N/A').toString(),
-            author: (song.primaryArtists || (song.artists && song.artists.primary && song.artists.primary.map(a => a.name).join(', '))) || 'Artist',
+            author: (song.primaryArtists || (song.artists && Array.isArray(song.artists.primary) && song.artists.primary.map(a => a.name).join(', '))) || 'Artist',
             thumbnailUrl: thumb,
             audioUrl,
           };
@@ -84,7 +85,8 @@ async function searchDeezerPreview(query) {
     });
     if (!r.ok) return null;
     const json = await r.json();
-    const track = json && json.data && json.data;
+    const list = Array.isArray(json && json.data) ? json.data : [];
+    const track = list.at(0);
     if (track && track.preview) {
       return {
         title: track.title,
@@ -115,8 +117,10 @@ app.get('/resolve', async (req, res) => {
     if (!result.thumbnailUrl) {
       try {
         const yt = await yts(query);
-        if (yt && yt.videos && yt.videos) {
-          result.thumbnailUrl = yt.videos.thumbnail || yt.videos.image || '';
+        const ytList = Array.isArray(yt && yt.videos) ? yt.videos : [];
+        const firstYt = ytList.at(0);
+        if (firstYt) {
+          result.thumbnailUrl = firstYt.thumbnail || firstYt.image || '';
         }
       } catch {}
     }
@@ -134,3 +138,4 @@ app.get('/resolve', async (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`ex-audio-resolver listening on ${PORT}`);
 });
+           
