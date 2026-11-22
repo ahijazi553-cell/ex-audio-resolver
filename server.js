@@ -59,11 +59,19 @@ app.get('/resolve', async (req, res) => {
           '--audio-format', 'mp3',
           '--audio-quality', '128K',
           '--no-playlist',
+          '--extractor-args', 'youtube:player_client=android',
           '-o', outFile,
           video.url,
         ],
         { timeout: 120000 },
-        (err) => (err ? reject(err) : resolve())
+        (err, _stdout, stderr) => {
+          if (err) {
+            console.error('yt-dlp stderr:', stderr);
+            reject(err);
+          } else {
+            resolve();
+          }
+        }
       );
     });
 
